@@ -1,0 +1,35 @@
+{
+  "name": "autodata",
+  "version": "1.0.0",
+  "main": "index.js",
+  "type": "module",
+  "bin": {
+    "autodata": "./build/index.js"
+  },
+  "scripts": {
+    "build": "tsc && chmod 755 build/index.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "description": "",
+  "files": [
+    "build"
+  ],
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.15.0",
+    "dotenv": "^17.0.1",
+    "zod": "^3.25.74",
+    "mysql2": "^3.11.5",
+    "mongodb": "^6.10.0",
+    "pg": "^8.13.1",
+    "handlebars": "^4.7.8",
+    "csvtojson": "^2.0.10",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.10",
+    "typescript": "^5.8.3",
+    "@types/pg": "^8.11.10"
+  }
+}
