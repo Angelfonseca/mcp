@@ -1,5 +1,6 @@
 import mysql from 'mysql2/promise';
 import { safeFetch } from './fetchs.js';
+import { getEmbedding } from './ollama.js';
 
 interface MySQLConnection {
   host: string;
@@ -261,49 +262,33 @@ async function searchMySQLData(config: MySQLConnection, searchTerm: string, tabl
  * Genera embeddings para datos de MySQL usando una API externa
  */
 async function generateMySQLEmbeddings(
-  config: MySQLConnection, 
-  tableName: string, 
+  config: MySQLConnection,
+  tableName: string,
   textColumn: string,
   embeddingApiUrl: string = 'http://localhost:11434/api/embeddings'
 ): Promise<any[]> {
   const conn = await createMySQLConnection(config);
-
+  const results: any[] = [];
   try {
-    // Obtener datos de texto
-    const [textData] = await conn.execute(
-      `SELECT id, ${textColumn} FROM ${tableName} WHERE ${textColumn} IS NOT NULL AND ${textColumn} != '' LIMIT 1000`
-    );
+    const [rows] = await conn.query(`SELECT id, \`${textColumn}\` FROM \`${tableName}\` WHERE \`${textColumn}\` IS NOT NULL LIMIT 1000`);
 
-    const results = [];
-    
-    for (const row of textData as any[]) {
+    for (const row of (rows as any[])) {
       try {
-        // Generar embedding usando Ollama
-        const embeddingResponse = await safeFetch(embeddingApiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            prompt: row[textColumn],
-            model: 'nomic-embed-text',
-          }),
-        });
-
+        const embedding = await getEmbedding(row[textColumn]);
+        
         results.push({
           id: row.id,
           text: row[textColumn],
-          embedding: (embeddingResponse as any).embedding,
+          embedding: embedding
         });
       } catch (error) {
         console.error(`Error generating embedding for row ${row.id}:`, error);
       }
     }
-
-    return results;
   } finally {
     await conn.end();
   }
+  return results;
 }
 
 export {

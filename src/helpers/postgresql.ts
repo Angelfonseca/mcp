@@ -1,5 +1,6 @@
 import pkg from 'pg';
 import { safeFetch } from './fetchs.js';
+import { getEmbedding } from './ollama.js';
 
 const { Pool } = pkg;
 
@@ -306,31 +307,17 @@ async function generatePostgreSQLEmbeddings(
   const pool = createPostgreSQLPool(config);
 
   try {
-    // Obtener datos de texto
-    const textData = await pool.query(
-      `SELECT id, ${textColumn} FROM ${tableName} WHERE ${textColumn} IS NOT NULL AND ${textColumn} != '' LIMIT 1000`
-    );
-
-    const results = [];
+    const textData = await pool.query(`SELECT id, ${textColumn} FROM ${tableName}`);
+    const results: any[] = [];
     
     for (const row of textData.rows) {
       try {
-        // Generar embedding usando Ollama
-        const embeddingResponse = await safeFetch(embeddingApiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            prompt: row[textColumn],
-            model: 'nomic-embed-text',
-          }),
-        });
-
+        const embedding = await getEmbedding(row[textColumn]);
+        
         results.push({
           id: row.id,
           text: row[textColumn],
-          embedding: (embeddingResponse as any).embedding,
+          embedding: embedding,
         });
       } catch (error) {
         console.error(`Error generating embedding for row ${row.id}:`, error);
@@ -339,7 +326,7 @@ async function generatePostgreSQLEmbeddings(
 
     return results;
   } finally {
-    await pool.end();
+    pool.end();
   }
 }
 

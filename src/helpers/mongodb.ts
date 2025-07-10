@@ -1,5 +1,6 @@
-import { MongoClient, Db, Collection } from 'mongodb';
+import { MongoClient, Db } from 'mongodb';
 import { safeFetch } from './fetchs.js';
+import { getEmbedding } from './ollama.js';
 
 interface MongoDBConnection {
   connectionString?: string;
@@ -238,46 +239,22 @@ async function generateMongoDBEmbeddings(
 
   try {
     const collection = db.collection(collectionName);
-    
-    // Obtener documentos con el campo de texto
-    const documents = await collection.find(
-      { 
-        [textField]: { 
-          $exists: true, 
-          $ne: null, 
-          $not: { $eq: '' } 
-        } 
-      }
-    ).limit(1000).toArray();
+    const documents = await collection.find({ [textField]: { $exists: true, $ne: '' } }).limit(1000).toArray();
+    const results: any[] = [];
 
-    const results = [];
-    
     for (const doc of documents) {
       try {
-        const textContent = doc[textField];
-        
-        // Generar embedding usando Ollama
-        const embeddingResponse = await safeFetch(embeddingApiUrl, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-          },
-          body: JSON.stringify({
-            prompt: textContent,
-            model: 'nomic-embed-text',
-          }),
-        });
+        const embedding = await getEmbedding(doc[textField]);
 
         results.push({
-          _id: doc._id,
-          text: textContent,
-          embedding: (embeddingResponse as any).embedding,
+          id: doc._id,
+          text: doc[textField],
+          embedding: embedding,
         });
       } catch (error) {
         console.error(`Error generating embedding for document ${doc._id}:`, error);
       }
     }
-
     return results;
   } finally {
     await client.close();

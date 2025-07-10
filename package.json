@@ -1,35 +1,56 @@
 {
-  "name": "autodata",
+  "name": "autodata-mcp",
   "version": "1.0.0",
-  "main": "index.js",
+  "description": "AutoData MCP Server - Análisis avanzado de datos con Python, bases de datos múltiples, Machine Learning y visualizaciones",
   "type": "module",
-  "bin": {
-    "autodata": "./build/index.js"
-  },
   "scripts": {
-    "build": "tsc && chmod 755 build/index.js"
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc --watch",
+    "install-python-deps": "pip3 install pandas numpy matplotlib seaborn scipy scikit-learn plotly statsmodels jupyter ipython",
+    "setup": "npm install && npm run install-python-deps && npm run build",
+    "test-python": "python3 -c \"import pandas, numpy, matplotlib, seaborn, scipy, sklearn; print('✅ Todas las dependencias Python están instaladas')\""
   },
-  "keywords": [],
-  "author": "",
-  "license": "ISC",
-  "description": "",
-  "files": [
-    "build"
-  ],
+  "main": "dist/index.js",
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.15.0",
-    "dotenv": "^17.0.1",
-    "zod": "^3.25.74",
-    "mysql2": "^3.11.5",
-    "mongodb": "^6.10.0",
+    "@modelcontextprotocol/sdk": "^1.0.4",
+    "zod": "^3.24.1",
+    "mysql2": "^3.11.4",
     "pg": "^8.13.1",
-    "handlebars": "^4.7.8",
-    "csvtojson": "^2.0.10",
-    "xlsx": "^0.18.5"
+    "mongodb": "^6.11.0",
+    "xlsx": "^0.18.5",
+    "chardet": "^2.0.0",
+    "puppeteer": "^22.14.0",
+    "docx": "^8.5.0",
+    "ollama": "^0.5.16"
   },
   "devDependencies": {
-    "@types/node": "^24.0.10",
-    "typescript": "^5.8.3",
-    "@types/pg": "^8.11.10"
-  }
+    "@types/node": "^20.0.0",
+    "@types/pg": "^8.11.10",
+    "typescript": "^5.6.3"
+  },
+  "engines": {
+    "node": ">=18.0.0",
+    "python": ">=3.8.0"
+  },
+  "keywords": [
+    "mcp",
+    "data-analysis",
+    "python",
+    "machine-learning",
+    "visualization",
+    "pandas",
+    "numpy",
+    "scikit-learn",
+    "database",
+    "mysql",
+    "postgresql",
+    "mongodb",
+    "statistics",
+    "clustering",
+    "regression",
+    "time-series"
+  ],
+  "author": "AutoData MCP",
+  "license": "MIT"
 }

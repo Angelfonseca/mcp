@@ -2,6 +2,8 @@ import Handlebars from 'handlebars';
 import { safeFetch } from './fetchs.js';
 import fs from 'fs/promises';
 import path from 'path';
+import puppeteer from 'puppeteer';
+import { Document, Packer, Paragraph, TextRun, HeadingLevel, Table, TableRow, TableCell, ISectionOptions, AlignmentType } from 'docx';
 
 interface DataPoint {
   label: string;
@@ -37,7 +39,7 @@ interface ReportTemplate {
 }
 
 interface ReportOptions {
-  format: 'html' | 'markdown';
+  format: 'html' | 'markdown' | 'pdf' | 'docx';
   outputPath?: string;
   includeCharts?: boolean;
   theme?: 'light' | 'dark';
@@ -119,6 +121,252 @@ function generateSimpleChart(config: ChartConfig): string {
   
   // Para otros tipos, mostrar tabla simple
   return generateTable(data.map(d => ({ Etiqueta: d.label, Valor: d.value })));
+}
+
+/**
+ * Exporta contenido HTML a un archivo PDF
+ */
+export async function exportToPDF(htmlContent: string, outputPath: string): Promise<void> {
+  const browser = await puppeteer.launch();
+  const page = await browser.newPage();
+  
+  await page.setContent(htmlContent, { waitUntil: 'networkidle0' });
+  
+  await page.pdf({
+    path: outputPath,
+    format: 'A4',
+    printBackground: true,
+    margin: {
+      top: '20mm',
+      right: '20mm',
+      bottom: '20mm',
+      left: '20mm'
+    }
+  });
+  
+  await browser.close();
+}
+
+/**
+ * Exporta un reporte a un archivo DOCX
+ */
+export async function exportToDOCX(report: ReportTemplate, outputPath: string): Promise<void> {
+  const sectionChildren: (Paragraph | Table)[] = [
+    new Paragraph({
+      children: [new TextRun({ text: report.title, bold: true, size: 48 })],
+      heading: HeadingLevel.TITLE,
+      alignment: AlignmentType.CENTER,
+    }),
+  ];
+
+  if (report.subtitle) {
+    sectionChildren.push(new Paragraph({
+      children: [new TextRun({ text: report.subtitle, size: 28 })],
+      heading: HeadingLevel.HEADING_1,
+      alignment: AlignmentType.CENTER,
+    }));
+  }
+
+  for (const section of report.sections) {
+    sectionChildren.push(new Paragraph({
+      children: [new TextRun({ text: section.title, bold: true, size: 32 })],
+      heading: HeadingLevel.HEADING_2,
+    }));
+
+    switch (section.type) {
+      case 'text':
+        sectionChildren.push(new Paragraph(section.content));
+        break;
+      case 'table':
+        if (section.data && section.data.length > 0) {
+          const headers = Object.keys(section.data[0]).map(header => new TableCell({ children: [new Paragraph({ children: [new TextRun({ text: header, bold: true })] })] }));
+          const headerRow = new TableRow({ children: headers });
+
+          const rows = section.data.map((row: any) => {
+            const cells = Object.values(row).map(cell => new TableCell({ children: [new Paragraph(String(cell))] }));
+            return new TableRow({ children: cells });
+          });
+
+          const table = new Table({
+            rows: [headerRow, ...rows],
+            width: { size: 100, type: 'pct' },
+          });
+          sectionChildren.push(table);
+        }
+        break;
+      case 'chart':
+        sectionChildren.push(new Paragraph("Los gráficos no se pueden exportar a DOCX en esta versión."));
+        break;
+      case 'list':
+          if (section.data && Array.isArray(section.data)) {
+              section.data.forEach(item => {
+                  sectionChildren.push(new Paragraph({
+                      text: String(item),
+                      bullet: {
+                          level: 0
+                      }
+                  }));
+              });
+          }
+          break;
+    }
+  }
+
+  const doc = new Document({
+    creator: report.author || 'AutoData MCP',
+    title: report.title,
+    description: report.subtitle,
+    sections: [{ children: sectionChildren }],
+  });
+
+  const buffer = await Packer.toBuffer(doc);
+  await fs.writeFile(outputPath, buffer);
+}
+
+/**
+ * Calcula la matriz de correlación entre columnas numéricas
+ */
+export function calculateCorrelationMatrix(data: any[]): { correlations: any, insights: string[] } {
+  if (data.length === 0) return { correlations: {}, insights: [] };
+  
+  const numericColumns = Object.keys(data[0]).filter(col => 
+    data.some(row => typeof row[col] === 'number' && !isNaN(row[col]))
+  );
+  
+  const correlations: any = {};
+  const insights: string[] = [];
+  
+  numericColumns.forEach(col1 => {
+    correlations[col1] = {};
+    numericColumns.forEach(col2 => {
+      const values1 = data.map(row => row[col1]).filter(v => typeof v === 'number' && !isNaN(v));
+      const values2 = data.map(row => row[col2]).filter(v => typeof v === 'number' && !isNaN(v));
+      
+      if (values1.length > 1 && values2.length > 1) {
+        const correlation = pearsonCorrelation(values1, values2);
+        correlations[col1][col2] = parseFloat(correlation.toFixed(3));
+        
+        if (col1 !== col2 && Math.abs(correlation) > 0.7) {
+          insights.push(`${col1} y ${col2} tienen una correlación ${correlation > 0 ? 'positiva' : 'negativa'} fuerte (${correlation.toFixed(3)})`);
+        }
+      } else {
+        correlations[col1][col2] = 0;
+      }
+    });
+  });
+  
+  return { correlations, insights };
+}
+
+/**
+ * Calcula el coeficiente de correlación de Pearson
+ */
+function pearsonCorrelation(x: number[], y: number[]): number {
+  const n = Math.min(x.length, y.length);
+  if (n === 0) return 0;
+  
+  const sumX = x.slice(0, n).reduce((a, b) => a + b, 0);
+  const sumY = y.slice(0, n).reduce((a, b) => a + b, 0);
+  const sumXY = x.slice(0, n).reduce((sum, xi, i) => sum + xi * y[i], 0);
+  const sumX2 = x.slice(0, n).reduce((sum, xi) => sum + xi * xi, 0);
+  const sumY2 = y.slice(0, n).reduce((sum, yi) => sum + yi * yi, 0);
+  
+  const numerator = n * sumXY - sumX * sumY;
+  const denominator = Math.sqrt((n * sumX2 - sumX * sumX) * (n * sumY2 - sumY * sumY));
+  
+  return denominator === 0 ? 0 : numerator / denominator;
+}
+
+/**
+ * Detecta anomalías usando el método IQR (Interquartile Range)
+ */
+export function detectAnomalies(data: any[], column: string): { anomalies: any[], insights: string[] } {
+  const values = data
+    .map(row => row[column])
+    .filter(v => typeof v === 'number' && !isNaN(v))
+    .sort((a, b) => a - b);
+  
+  if (values.length < 4) return { anomalies: [], insights: [] };
+  
+  const q1Index = Math.floor(values.length * 0.25);
+  const q3Index = Math.floor(values.length * 0.75);
+  const q1 = values[q1Index];
+  const q3 = values[q3Index];
+  const iqr = q3 - q1;
+  const lowerBound = q1 - 1.5 * iqr;
+  const upperBound = q3 + 1.5 * iqr;
+  
+  const anomalies = data.filter(row => {
+    const value = row[column];
+    return typeof value === 'number' && (value < lowerBound || value > upperBound);
+  });
+  
+  const insights = [
+    `Se detectaron ${anomalies.length} anomalías en ${column}`,
+    `Rango normal: ${lowerBound.toFixed(2)} - ${upperBound.toFixed(2)}`,
+    `Valores anómalos: ${anomalies.map(row => row[column]).join(', ')}`
+  ];
+  
+  return { anomalies, insights };
+}
+
+/**
+ * Realiza clustering k-means simple en 2D
+ */
+export function performKMeansClustering(data: any[], xColumn: string, yColumn: string, k: number = 3): { clusters: any[], insights: string[] } {
+  const points = data
+    .filter(row => typeof row[xColumn] === 'number' && typeof row[yColumn] === 'number')
+    .map(row => ({ x: row[xColumn], y: row[yColumn], original: row }));
+  
+  if (points.length < k) return { clusters: [], insights: [] };
+  
+  // Inicializar centroides aleatoriamente
+  const centroids = Array.from({ length: k }, () => ({
+    x: Math.random() * (Math.max(...points.map(p => p.x)) - Math.min(...points.map(p => p.x))) + Math.min(...points.map(p => p.x)),
+    y: Math.random() * (Math.max(...points.map(p => p.y)) - Math.min(...points.map(p => p.y))) + Math.min(...points.map(p => p.y))
+  }));
+  
+  // Algoritmo k-means simplificado (pocas iteraciones)
+  for (let iter = 0; iter < 10; iter++) {
+    // Asignar puntos a clusters
+    points.forEach(point => {
+      let minDistance = Infinity;
+      let assignedCluster = 0;
+      
+      centroids.forEach((centroid, index) => {
+        const distance = Math.sqrt(Math.pow(point.x - centroid.x, 2) + Math.pow(point.y - centroid.y, 2));
+        if (distance < minDistance) {
+          minDistance = distance;
+          assignedCluster = index;
+        }
+      });
+      
+      (point as any).cluster = assignedCluster;
+    });
+    
+    // Actualizar centroides
+    centroids.forEach((centroid, index) => {
+      const clusterPoints = points.filter((point: any) => point.cluster === index);
+      if (clusterPoints.length > 0) {
+        centroid.x = clusterPoints.reduce((sum, p) => sum + p.x, 0) / clusterPoints.length;
+        centroid.y = clusterPoints.reduce((sum, p) => sum + p.y, 0) / clusterPoints.length;
+      }
+    });
+  }
+  
+  const clusters = centroids.map((centroid, index) => ({
+    id: index,
+    centroid,
+    points: points.filter((point: any) => point.cluster === index).map(p => p.original),
+    size: points.filter((point: any) => point.cluster === index).length
+  }));
+  
+  const insights = [
+    `Se crearon ${k} clusters usando ${xColumn} y ${yColumn}`,
+    ...clusters.map(cluster => `Cluster ${cluster.id}: ${cluster.size} puntos, centro en (${cluster.centroid.x.toFixed(2)}, ${cluster.centroid.y.toFixed(2)})`)
+  ];
+  
+  return { clusters, insights };
 }
 
 /**
@@ -367,14 +615,31 @@ async function generateReport(template: ReportTemplate, options: ReportOptions):
     theme
   });
   
-  if (format === 'html') {
-    if (outputPath) {
-      await fs.writeFile(outputPath, htmlContent, 'utf-8');
+  if (options.format === 'pdf') {
+    if (!options.outputPath) {
+      throw new Error('Se requiere un outputPath para el formato PDF.');
+    }
+    await exportToPDF(htmlContent, options.outputPath);
+    return `Reporte PDF generado en: ${options.outputPath}`;
+  }
+
+  if (options.format === 'docx') {
+    if (!options.outputPath) {
+      throw new Error('Se requiere un outputPath para el formato DOCX.');
+    }
+    // Para DOCX, pasamos el objeto de template completo
+    await exportToDOCX(template, options.outputPath);
+    return `Reporte DOCX generado en: ${options.outputPath}`;
+  }
+
+  if (options.format === 'html') {
+    if (options.outputPath) {
+      await fs.writeFile(options.outputPath, htmlContent, 'utf-8');
     }
     return htmlContent;
   }
   
-  if (format === 'markdown') {
+  if (options.format === 'markdown') {
     // Convertir HTML a Markdown (simplificado)
     let markdown = `# ${template.title}\n\n`;
     if (template.subtitle) markdown += `## ${template.subtitle}\n\n`;
