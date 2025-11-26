@@ -2,6 +2,24 @@ import * as fs from 'fs';
 import * as path from 'path';
 import * as chardet from 'chardet';
 import * as xlsx from 'xlsx';
+// Importaciones opcionales para análisis de documentos
+let pdfParse: any;
+let mammoth: any;
+let natural: any;
+let sentiment: any;
+let compromise: any;
+let keyword: any;
+
+try {
+  pdfParse = require('pdf-parse');
+  mammoth = require('mammoth');
+  natural = require('natural');
+  sentiment = require('sentiment');
+  compromise = require('compromise');
+  keyword = require('keyword-extractor');
+} catch (error) {
+  console.warn('Algunas dependencias de análisis de documentos no están instaladas. Ejecuta: npm install');
+}
 
 /**
  * Detecta automáticamente el delimitador de un archivo CSV
@@ -267,6 +285,513 @@ export function readExcel(filePath: string, options: {
 }
 
 /**
+ * Lee archivos PDF y extrae texto con metadatos
+ */
+export async function readPDF(filePath: string, options: {
+  extractMetadata?: boolean;
+  maxPages?: number;
+  includeImages?: boolean;
+} = {}): Promise<{
+  text: string;
+  pages: number;
+  metadata?: any;
+  wordCount: number;
+  extractedDate: string;
+  language?: string;
+}> {
+  const { extractMetadata = true, maxPages, includeImages = false } = options;
+  
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Archivo PDF no encontrado: ${filePath}`);
+  }
+  
+  console.log(`📄 Procesando PDF: ${filePath}`);
+  
+  try {
+    const dataBuffer = fs.readFileSync(filePath);
+    const data = await pdfParse(dataBuffer, {
+      max: maxPages || 0
+    });
+    
+    // Limpiar y estructurar el texto
+    const cleanText = data.text
+      .replace(/\s+/g, ' ')
+      .replace(/\n\s*\n/g, '\n')
+      .trim();
+    
+    const wordCount = cleanText.split(/\s+/).filter((word: string) => word.length > 0).length;
+    
+    // Detectar idioma básico
+    const language = detectLanguage(cleanText);
+    
+    const result: any = {
+      text: cleanText,
+      pages: data.numpages,
+      wordCount,
+      extractedDate: new Date().toISOString(),
+      language
+    };
+    
+    if (extractMetadata && data.info) {
+      result.metadata = {
+        title: data.info.Title,
+        author: data.info.Author,
+        subject: data.info.Subject,
+        creator: data.info.Creator,
+        producer: data.info.Producer,
+        creationDate: data.info.CreationDate,
+        modificationDate: data.info.ModDate
+      };
+    }
+    
+    console.log(`✅ PDF procesado: ${data.numpages} páginas, ${wordCount} palabras`);
+    return result;
+    
+  } catch (error) {
+    throw new Error(`Error procesando PDF: ${error}`);
+  }
+}
+
+/**
+ * Lee archivos DOCX y extrae texto con formato
+ */
+export async function readDOCX(filePath: string, options: {
+  extractMetadata?: boolean;
+  preserveFormatting?: boolean;
+  includeImages?: boolean;
+} = {}): Promise<{
+  text: string;
+  html?: string;
+  wordCount: number;
+  extractedDate: string;
+  language?: string;
+  metadata?: any;
+}> {
+  const { extractMetadata = true, preserveFormatting = false, includeImages = false } = options;
+  
+  if (!fs.existsSync(filePath)) {
+    throw new Error(`Archivo DOCX no encontrado: ${filePath}`);
+  }
+  
+  console.log(`📄 Procesando DOCX: ${filePath}`);
+  
+  try {
+    const dataBuffer = fs.readFileSync(filePath);
+    
+    // Extraer texto simple
+    const textResult = await mammoth.extractRawText({ buffer: dataBuffer });
+    const cleanText = textResult.value.trim();
+    
+    const wordCount = cleanText.split(/\s+/).filter((word: string) => word.length > 0).length;
+    const language = detectLanguage(cleanText);
+    
+    const result: any = {
+      text: cleanText,
+      wordCount,
+      extractedDate: new Date().toISOString(),
+      language
+    };
+    
+    // Extraer HTML si se preserva formato
+    if (preserveFormatting) {
+      const htmlResult = await mammoth.convertToHtml({ buffer: dataBuffer });
+      result.html = htmlResult.value;
+    }
+    
+    // Metadatos básicos del archivo
+    if (extractMetadata) {
+      const stats = fs.statSync(filePath);
+      result.metadata = {
+        filename: path.basename(filePath),
+        size: stats.size,
+        created: stats.birthtime,
+        modified: stats.mtime
+      };
+    }
+    
+    console.log(`✅ DOCX procesado: ${wordCount} palabras`);
+    return result;
+    
+  } catch (error) {
+    throw new Error(`Error procesando DOCX: ${error}`);
+  }
+}
+
+/**
+ * Detecta idioma básico del texto (español/inglés)
+ */
+function detectLanguage(text: string): string {
+  const sample = text.slice(0, 1000).toLowerCase();
+  
+  const spanishWords = ['el', 'la', 'en', 'de', 'que', 'y', 'es', 'por', 'con', 'para', 'una', 'los'];
+  const englishWords = ['the', 'and', 'to', 'of', 'a', 'in', 'is', 'it', 'you', 'that', 'for', 'on'];
+  
+  let spanishCount = 0;
+  let englishCount = 0;
+  
+  spanishWords.forEach(word => {
+    const regex = new RegExp(`\\b${word}\\b`, 'g');
+    spanishCount += (sample.match(regex) || []).length;
+  });
+  
+  englishWords.forEach(word => {
+    const regex = new RegExp(`\\b${word}\\b`, 'g');
+    englishCount += (sample.match(regex) || []).length;
+  });
+  
+  if (spanishCount > englishCount * 1.2) return 'Spanish';
+  if (englishCount > spanishCount * 1.2) return 'English';
+  return 'Unknown';
+}
+
+/**
+ * Analiza texto completo con NLP: sentimientos, palabras clave, entidades, legibilidad
+ */
+export function analyzeText(text: string, options: {
+  includeSentiment?: boolean;
+  includeKeywords?: boolean;
+  includeEntities?: boolean;
+  includeReadability?: boolean;
+  keywordCount?: number;
+} = {}): {
+  sentiment?: any;
+  keywords?: string[];
+  entities?: any[];
+  readability?: any;
+  statistics: {
+    characters: number;
+    words: number;
+    sentences: number;
+    paragraphs: number;
+    averageWordsPerSentence: number;
+    averageSentencesPerParagraph: number;
+  };
+} {
+  const {
+    includeSentiment = true,
+    includeKeywords = true,
+    includeEntities = true,
+    includeReadability = true,
+    keywordCount = 20
+  } = options;
+  
+  console.log(`🔍 Analizando texto (${text.length} caracteres)...`);
+  
+  const result: any = {};
+  
+  // Estadísticas básicas
+  const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+  const words = text.split(/\s+/).filter(w => w.length > 0);
+  const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+  
+  result.statistics = {
+    characters: text.length,
+    words: words.length,
+    sentences: sentences.length,
+    paragraphs: paragraphs.length,
+    averageWordsPerSentence: words.length / sentences.length || 0,
+    averageSentencesPerParagraph: sentences.length / paragraphs.length || 0
+  };
+  
+  // Análisis de sentimientos
+  if (includeSentiment) {
+    try {
+      const sentimentAnalyzer = new sentiment();
+      const sentimentResult = sentimentAnalyzer.analyze(text);
+      
+      result.sentiment = {
+        score: sentimentResult.score,
+        comparative: sentimentResult.comparative,
+        positive: sentimentResult.positive,
+        negative: sentimentResult.negative,
+        polarity: sentimentResult.score > 2 ? 'positive' : 
+                 sentimentResult.score < -2 ? 'negative' : 'neutral'
+      };
+    } catch (error) {
+      console.warn('Error en análisis de sentimientos:', error);
+    }
+  }
+  
+  // Extracción de palabras clave
+  if (includeKeywords) {
+    try {
+      const keywords = keyword.extract(text, {
+        language: 'spanish',
+        remove_digits: true,
+        return_changed_case: true,
+        remove_duplicates: true
+      });
+      
+      result.keywords = keywords.slice(0, keywordCount);
+    } catch (error) {
+      console.warn('Error extrayendo palabras clave:', error);
+    }
+  }
+  
+  // Extracción de entidades con Compromise
+  if (includeEntities) {
+    try {
+      const doc = compromise(text);
+      
+      result.entities = {
+        people: doc.people().out('array'),
+        places: doc.places().out('array'),
+        organizations: doc.organizations().out('array'),
+        dates: doc.dates().out('array'),
+        numbers: doc.values().out('array')
+      };
+    } catch (error) {
+      console.warn('Error extrayendo entidades:', error);
+    }
+  }
+  
+  // Análisis de legibilidad
+  if (includeReadability) {
+    try {
+      result.readability = calculateReadability(text, sentences, words);
+    } catch (error) {
+      console.warn('Error calculando legibilidad:', error);
+    }
+  }
+  
+  console.log(`✅ Análisis de texto completado`);
+  return result;
+}
+
+/**
+ * Calcula métricas de legibilidad
+ */
+function calculateReadability(text: string, sentences: string[], words: string[]): any {
+  const avgWordsPerSentence = words.length / sentences.length || 0;
+  const avgSyllablesPerWord = words.reduce((sum: number, word: string) => sum + countSyllables(word), 0) / words.length || 0;
+  
+  // Índice de legibilidad de Flesch (adaptado para español)
+  const fleschScore = 206.835 - (1.015 * avgWordsPerSentence) - (84.6 * avgSyllablesPerWord);
+  
+  let readingLevel = 'Muy difícil';
+  if (fleschScore >= 90) readingLevel = 'Muy fácil';
+  else if (fleschScore >= 80) readingLevel = 'Fácil';
+  else if (fleschScore >= 70) readingLevel = 'Bastante fácil';
+  else if (fleschScore >= 60) readingLevel = 'Normal';
+  else if (fleschScore >= 50) readingLevel = 'Bastante difícil';
+  else if (fleschScore >= 30) readingLevel = 'Difícil';
+  
+  return {
+    fleschScore: Math.round(fleschScore),
+    readingLevel,
+    avgWordsPerSentence: Math.round(avgWordsPerSentence * 100) / 100,
+    avgSyllablesPerWord: Math.round(avgSyllablesPerWord * 100) / 100,
+    estimatedReadingTimeMinutes: Math.round(words.length / 200) // 200 palabras por minuto
+  };
+}
+
+/**
+ * Cuenta sílabas en una palabra (aproximación)
+ */
+function countSyllables(word: string): number {
+  word = word.toLowerCase();
+  if (word.length <= 3) return 1;
+  
+  const vowels = 'aeiouáéíóúü';
+  let syllables = 0;
+  let prevWasVowel = false;
+  
+  for (let i = 0; i < word.length; i++) {
+    const isVowel = vowels.includes(word[i]);
+    if (isVowel && !prevWasVowel) {
+      syllables++;
+    }
+    prevWasVowel = isVowel;
+  }
+  
+  // Ajustes para español
+  if (word.endsWith('e') && syllables > 1) syllables--;
+  if (syllables === 0) syllables = 1;
+  
+  return syllables;
+}
+
+/**
+ * Extrae datos tabulares de texto usando patrones comunes
+ */
+export function extractTabularData(text: string, options: {
+  detectTables?: boolean;
+  detectLists?: boolean;
+  detectKeyValuePairs?: boolean;
+} = {}): {
+  tables: any[][];
+  lists: string[][];
+  keyValuePairs: Record<string, string>;
+} {
+  const { detectTables = true, detectLists = true, detectKeyValuePairs = true } = options;
+  
+  const result: any = {
+    tables: [],
+    lists: [],
+    keyValuePairs: {}
+  };
+  
+  // Detectar tablas (líneas con múltiples delimitadores)
+  if (detectTables) {
+    const lines = text.split('\n');
+    let currentTable: string[][] = [];
+    
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed) {
+        if (currentTable.length > 1) {
+          result.tables.push(currentTable);
+          currentTable = [];
+        }
+        continue;
+      }
+      
+      // Detectar si es una línea tabular
+      const delimiters = ['\t', '|', ','];
+      for (const delimiter of delimiters) {
+        const columns = trimmed.split(delimiter);
+        if (columns.length >= 2 && columns.every(col => col.trim().length > 0)) {
+          currentTable.push(columns.map(col => col.trim()));
+          break;
+        }
+      }
+    }
+    
+    if (currentTable.length > 1) {
+      result.tables.push(currentTable);
+    }
+  }
+  
+  // Detectar listas numeradas o con viñetas
+  if (detectLists) {
+    const listRegex = /^[\s]*(?:\d+\.|\*|-|•)\s+(.+)$/gm;
+    let match;
+    let currentList: string[] = [];
+    
+    while ((match = listRegex.exec(text)) !== null) {
+      currentList.push(match[1].trim());
+    }
+    
+    if (currentList.length > 0) {
+      result.lists.push(currentList);
+    }
+  }
+  
+  // Detectar pares clave-valor
+  if (detectKeyValuePairs) {
+    const kvRegex = /^[\s]*([^:\n]+):\s*([^:\n]+)$/gm;
+    let match;
+    
+    while ((match = kvRegex.exec(text)) !== null) {
+      const key = match[1].trim();
+      const value = match[2].trim();
+      if (key.length > 0 && value.length > 0) {
+        result.keyValuePairs[key] = value;
+      }
+    }
+  }
+  
+  return result;
+}
+
+/**
+ * Convierte texto a diferentes formatos estructurados
+ */
+export function convertTextToFormat(text: string, targetFormat: 'json' | 'csv' | 'markdown' | 'html', options: {
+  extractStructure?: boolean;
+  includeMetadata?: boolean;
+} = {}): string {
+  const { extractStructure = true, includeMetadata = false } = options;
+  
+  let result = '';
+  const metadata = {
+    convertedAt: new Date().toISOString(),
+    originalLength: text.length,
+    wordCount: text.split(/\s+/).length
+  };
+  
+  switch (targetFormat) {
+    case 'json':
+      const jsonData: any = { content: text };
+      
+      if (extractStructure) {
+        const extracted = extractTabularData(text);
+        if (extracted.tables.length > 0) jsonData.tables = extracted.tables;
+        if (extracted.lists.length > 0) jsonData.lists = extracted.lists;
+        if (Object.keys(extracted.keyValuePairs).length > 0) jsonData.keyValuePairs = extracted.keyValuePairs;
+      }
+      
+      if (includeMetadata) jsonData.metadata = metadata;
+      
+      result = JSON.stringify(jsonData, null, 2);
+      break;
+      
+    case 'csv':
+      // Convertir a CSV simple (línea por párrafo)
+      const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+      result = 'paragraph_number,content\n';
+      paragraphs.forEach((paragraph, index) => {
+        const cleanParagraph = paragraph.replace(/"/g, '""').replace(/\n/g, ' ');
+        result += `${index + 1},"${cleanParagraph}"\n`;
+      });
+      break;
+      
+    case 'markdown':
+      result = text
+        .split('\n\n')
+        .map(paragraph => paragraph.trim())
+        .filter(p => p.length > 0)
+        .map(paragraph => {
+          // Detectar y convertir títulos
+          if (paragraph.length < 100 && !paragraph.includes('.') && paragraph.split(' ').length <= 8) {
+            return `## ${paragraph}`;
+          }
+          return paragraph;
+        })
+        .join('\n\n');
+      
+      if (includeMetadata) {
+        result = `---\nconvertedAt: ${metadata.convertedAt}\nwordCount: ${metadata.wordCount}\n---\n\n${result}`;
+      }
+      break;
+      
+    case 'html':
+      const htmlParagraphs = text
+        .split('\n\n')
+        .map(paragraph => paragraph.trim())
+        .filter(p => p.length > 0)
+        .map(paragraph => {
+          if (paragraph.length < 100 && !paragraph.includes('.') && paragraph.split(' ').length <= 8) {
+            return `<h2>${paragraph}</h2>`;
+          }
+          return `<p>${paragraph}</p>`;
+        })
+        .join('\n');
+      
+      result = `<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Documento Convertido</title>
+    <style>
+        body { font-family: Arial, sans-serif; line-height: 1.6; max-width: 800px; margin: 0 auto; padding: 20px; }
+        h2 { color: #333; border-bottom: 2px solid #ddd; padding-bottom: 10px; }
+        p { margin-bottom: 15px; text-align: justify; }
+    </style>
+</head>
+<body>
+${htmlParagraphs}
+${includeMetadata ? `<footer><small>Convertido el ${metadata.convertedAt} | ${metadata.wordCount} palabras</small></footer>` : ''}
+</body>
+</html>`;
+      break;
+  }
+  
+  return result;
+}
+
+/**
  * Procesa datos en lotes para evitar sobrecarga de memoria
  */
 export async function processBatch<T, R>(
@@ -301,4 +826,98 @@ export async function processBatch<T, R>(
   
   console.log(`✅ Procesamiento completado: ${results.length} resultados`);
   return results;
+}
+
+/**
+ * Interfaz unificada para leer cualquier tipo de documento
+ */
+export async function readDocument(filePath: string, options: {
+  extractText?: boolean;
+  extractMetadata?: boolean;
+  analyzeText?: boolean;
+  extractStructure?: boolean;
+  maxPages?: number;
+} = {}): Promise<{
+  type: string;
+  content: string;
+  metadata?: any;
+  analysis?: any;
+  structure?: any;
+  success: boolean;
+  error?: string;
+}> {
+  const {
+    extractText = true,
+    extractMetadata = true,
+    analyzeText: shouldAnalyzeText = false,
+    extractStructure = false,
+    maxPages
+  } = options;
+  
+  const ext = path.extname(filePath).toLowerCase();
+  const result: any = {
+    type: ext,
+    success: false
+  };
+  
+  try {
+    console.log(`📄 Procesando documento: ${filePath} (${ext})`);
+    
+    switch (ext) {
+      case '.pdf':
+        const pdfData = await readPDF(filePath, { extractMetadata, maxPages });
+        result.content = pdfData.text;
+        result.metadata = pdfData.metadata;
+        result.metadata.pages = pdfData.pages;
+        result.metadata.wordCount = pdfData.wordCount;
+        result.metadata.language = pdfData.language;
+        break;
+        
+      case '.docx':
+        const docxData = await readDOCX(filePath, { extractMetadata });
+        result.content = docxData.text;
+        result.metadata = docxData.metadata;
+        result.metadata.wordCount = docxData.wordCount;
+        result.metadata.language = docxData.language;
+        break;
+        
+      case '.txt':
+        const txtContent = fs.readFileSync(filePath, 'utf8');
+        result.content = txtContent;
+        if (extractMetadata) {
+          const stats = fs.statSync(filePath);
+          result.metadata = {
+            filename: path.basename(filePath),
+            size: stats.size,
+            created: stats.birthtime,
+            modified: stats.mtime,
+            wordCount: txtContent.split(/\s+/).length,
+            language: detectLanguage(txtContent)
+          };
+        }
+        break;
+        
+      default:
+        throw new Error(`Tipo de archivo no soportado: ${ext}`);
+    }
+    
+    // Análisis de texto si se solicita
+    if (shouldAnalyzeText && result.content) {
+      result.analysis = analyzeText(result.content);
+    }
+    
+    // Extracción de estructura si se solicita
+    if (extractStructure && result.content) {
+      result.structure = extractTabularData(result.content);
+    }
+    
+    result.success = true;
+    console.log(`✅ Documento procesado exitosamente: ${result.content?.length || 0} caracteres`);
+    
+  } catch (error) {
+    result.error = (error as Error).message;
+    console.error(`❌ Error procesando documento: ${result.error}`);
+  }
+  
+  return result;
 } 

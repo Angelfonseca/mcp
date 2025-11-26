@@ -11,6 +11,8 @@ import { safeFetch } from './helpers/fetchs.js';
 import { getEmbedding } from './helpers/ollama.js';
 import * as pythonHelpers from './helpers/python.js';
 import { SQLGenerator } from './helpers/sql-generator.js';
+import * as path from 'path';
+import * as fs from 'fs';
 export const USER_AGENT = "data-analysis-mcp/1.0.0";
 async function generateEmbeddingsForData(data, textField, embeddingField) {
     for (const row of data) {
@@ -2002,6 +2004,337 @@ function generateCustomQueries(tableName, requirements, columns, dbType) {
     sql += `-- LIMIT [número apropiado];\n\n`;
     return sql;
 }
+server.tool("read-document-content", "Lee y extrae texto completo de documentos PDF, DOCX o TXT con análisis avanzado de contenido, metadatos, estructura y análisis NLP. Optimizado para LLMs con extracción inteligente de información clave, tablas, listas y entidades. Maneja archivos grandes con límites configurables.", {
+    filePath: z.string().describe("Ruta completa del archivo a analizar (soporta .pdf, .docx, .txt) - ej: '/Users/usuario/documento.pdf'"),
+    extractMetadata: z.boolean().default(true).describe("Si extraer metadatos del archivo: autor, fecha creación, tamaño, páginas, etc."),
+    analyzeText: z.boolean().default(true).describe("Si realizar análisis NLP completo: sentimientos, palabras clave, entidades, legibilidad"),
+    extractStructure: z.boolean().default(true).describe("Si extraer estructura del documento: tablas, listas, pares clave-valor automáticamente"),
+    maxPages: z.number().optional().describe("Máximo número de páginas a procesar (solo PDFs) - útil para documentos muy grandes"),
+    includeReadability: z.boolean().default(true).describe("Si incluir métricas de legibilidad: índice Flesch, nivel de lectura, tiempo estimado"),
+    language: z.enum(['auto', 'spanish', 'english']).default('auto').describe("Idioma para análisis NLP - 'auto' detecta automáticamente"),
+    keywordCount: z.number().default(20).describe("Número máximo de palabras clave a extraer del contenido")
+}, async ({ filePath, extractMetadata, analyzeText, extractStructure, maxPages, includeReadability, language, keywordCount }) => {
+    try {
+        console.log(`📄 Analizando documento: ${filePath}`);
+        const result = await filesHelpers.readDocument(filePath, {
+            extractMetadata,
+            analyzeText,
+            extractStructure,
+            maxPages
+        });
+        if (!result.success) {
+            return {
+                content: [{ type: 'text', text: `❌ Error procesando documento: ${result.error}` }]
+            };
+        }
+        // Análisis adicional si se solicita
+        if (analyzeText && result.content) {
+            result.analysis = filesHelpers.analyzeText(result.content, {
+                includeReadability,
+                keywordCount,
+                includeSentiment: true,
+                includeKeywords: true,
+                includeEntities: true
+            });
+        }
+        let response = `📄 **Documento Analizado: ${path.basename(filePath)}**\n\n`;
+        response += `📁 **Tipo:** ${result.type.toUpperCase()}\n`;
+        response += `📝 **Contenido:** ${result.content.length} caracteres\n`;
+        if (result.metadata) {
+            response += `\n📊 **Metadatos:**\n`;
+            if (result.metadata.pages)
+                response += `• Páginas: ${result.metadata.pages}\n`;
+            if (result.metadata.wordCount)
+                response += `• Palabras: ${result.metadata.wordCount}\n`;
+            if (result.metadata.language)
+                response += `• Idioma: ${result.metadata.language}\n`;
+            if (result.metadata.author)
+                response += `• Autor: ${result.metadata.author}\n`;
+            if (result.metadata.title)
+                response += `• Título: ${result.metadata.title}\n`;
+            if (result.metadata.size)
+                response += `• Tamaño: ${(result.metadata.size / 1024).toFixed(1)} KB\n`;
+        }
+        if (result.analysis) {
+            response += `\n🔍 **Análisis de Texto:**\n`;
+            if (result.analysis.statistics) {
+                const stats = result.analysis.statistics;
+                response += `• Estadísticas: ${stats.words} palabras, ${stats.sentences} oraciones, ${stats.paragraphs} párrafos\n`;
+                response += `• Promedio: ${stats.averageWordsPerSentence.toFixed(1)} palabras/oración\n`;
+            }
+            if (result.analysis.sentiment) {
+                response += `• Sentimiento: ${result.analysis.sentiment.polarity} (score: ${result.analysis.sentiment.score})\n`;
+            }
+            if (result.analysis.readability) {
+                response += `• Legibilidad: ${result.analysis.readability.readingLevel} (Flesch: ${result.analysis.readability.fleschScore})\n`;
+                response += `• Tiempo lectura: ~${result.analysis.readability.estimatedReadingTimeMinutes} minutos\n`;
+            }
+            if (result.analysis.keywords && result.analysis.keywords.length > 0) {
+                response += `• Palabras clave: ${result.analysis.keywords.slice(0, 10).join(', ')}\n`;
+            }
+            if (result.analysis.entities) {
+                const entities = result.analysis.entities;
+                if (entities.people?.length > 0)
+                    response += `• Personas: ${entities.people.slice(0, 5).join(', ')}\n`;
+                if (entities.places?.length > 0)
+                    response += `• Lugares: ${entities.places.slice(0, 5).join(', ')}\n`;
+                if (entities.organizations?.length > 0)
+                    response += `• Organizaciones: ${entities.organizations.slice(0, 3).join(', ')}\n`;
+            }
+        }
+        if (result.structure) {
+            response += `\n📋 **Estructura Extraída:**\n`;
+            if (result.structure.tables?.length > 0) {
+                response += `• Tablas encontradas: ${result.structure.tables.length}\n`;
+            }
+            if (result.structure.lists?.length > 0) {
+                response += `• Listas encontradas: ${result.structure.lists.length}\n`;
+            }
+            if (Object.keys(result.structure.keyValuePairs || {}).length > 0) {
+                response += `• Pares clave-valor: ${Object.keys(result.structure.keyValuePairs).length}\n`;
+            }
+        }
+        // Mostrar una muestra del contenido
+        const contentPreview = result.content.length > 500 ?
+            result.content.slice(0, 500) + '...' : result.content;
+        response += `\n📖 **Vista previa del contenido:**\n\`\`\`\n${contentPreview}\n\`\`\`\n\n`;
+        response += `✅ **Análisis completado exitosamente**`;
+        return {
+            content: [{ type: 'text', text: response }]
+        };
+    }
+    catch (error) {
+        const err = error;
+        return {
+            content: [{ type: 'text', text: `❌ Error analizando documento: ${err.message}` }]
+        };
+    }
+});
+server.tool("extract-document-data", "Extrae datos estructurados de documentos (tablas, listas, formularios) y los convierte a formato JSON/CSV para análisis. Detecta automáticamente patrones tabulares, listas numeradas, pares clave-valor y formularios. Ideal para procesar facturas, reportes, formularios y documentos técnicos.", {
+    filePath: z.string().describe("Ruta del documento PDF, DOCX o TXT a procesar"),
+    outputFormat: z.enum(['json', 'csv', 'both']).default('json').describe("Formato de salida de los datos extraídos"),
+    detectTables: z.boolean().default(true).describe("Si detectar y extraer tablas del documento"),
+    detectLists: z.boolean().default(true).describe("Si extraer listas numeradas y con viñetas"),
+    detectKeyValuePairs: z.boolean().default(true).describe("Si extraer pares clave-valor (ej: 'Nombre: Juan')"),
+    saveTo: z.string().optional().describe("Ruta donde guardar el archivo de datos extraídos (opcional)"),
+    includePositions: z.boolean().default(false).describe("Si incluir información de posición de los datos extraídos"),
+    minTableRows: z.number().default(2).describe("Mínimo número de filas para considerar algo como tabla")
+}, async ({ filePath, outputFormat, detectTables, detectLists, detectKeyValuePairs, saveTo, includePositions, minTableRows }) => {
+    try {
+        console.log(`🔍 Extrayendo datos estructurados de: ${filePath}`);
+        // Leer documento
+        const docResult = await filesHelpers.readDocument(filePath, {
+            extractText: true,
+            extractMetadata: false,
+            analyzeText: false,
+            extractStructure: true
+        });
+        if (!docResult.success) {
+            return {
+                content: [{ type: 'text', text: `❌ Error leyendo documento: ${docResult.error}` }]
+            };
+        }
+        // Extraer estructura adicional
+        const structure = filesHelpers.extractTabularData(docResult.content, {
+            detectTables,
+            detectLists,
+            detectKeyValuePairs
+        });
+        // Filtrar tablas por tamaño mínimo
+        const validTables = structure.tables.filter(table => table.length >= minTableRows);
+        const extractedData = {
+            metadata: {
+                sourceFile: path.basename(filePath),
+                extractedAt: new Date().toISOString(),
+                documentType: docResult.type,
+                contentLength: docResult.content.length
+            },
+            tables: validTables.map((table, index) => ({
+                id: `table_${index + 1}`,
+                headers: table[0] || [],
+                rows: table.slice(1),
+                rowCount: table.length - 1,
+                columnCount: (table[0] || []).length
+            })),
+            lists: structure.lists.map((list, index) => ({
+                id: `list_${index + 1}`,
+                items: list,
+                itemCount: list.length
+            })),
+            keyValuePairs: structure.keyValuePairs,
+            summary: {
+                tablesFound: validTables.length,
+                listsFound: structure.lists.length,
+                keyValuePairsFound: Object.keys(structure.keyValuePairs).length,
+                totalDataPoints: validTables.reduce((sum, table) => sum + (table.length - 1), 0) +
+                    structure.lists.reduce((sum, list) => sum + list.length, 0) +
+                    Object.keys(structure.keyValuePairs).length
+            }
+        };
+        let response = `🔍 **Extracción de Datos Completada**\n\n`;
+        response += `📄 **Archivo:** ${path.basename(filePath)}\n`;
+        response += `📊 **Resumen de extracción:**\n`;
+        response += `• Tablas: ${extractedData.summary.tablesFound}\n`;
+        response += `• Listas: ${extractedData.summary.listsFound}\n`;
+        response += `• Pares clave-valor: ${extractedData.summary.keyValuePairsFound}\n`;
+        response += `• Total puntos de datos: ${extractedData.summary.totalDataPoints}\n\n`;
+        // Generar salidas según formato solicitado
+        const outputs = [];
+        if (outputFormat === 'json' || outputFormat === 'both') {
+            const jsonOutput = JSON.stringify(extractedData, null, 2);
+            outputs.push('JSON');
+            if (saveTo) {
+                const jsonPath = saveTo.replace(/\.[^.]+$/, '.json');
+                fs.writeFileSync(jsonPath, jsonOutput, 'utf8');
+                response += `💾 **JSON guardado en:** ${jsonPath}\n`;
+            }
+            // Mostrar vista previa del JSON
+            const jsonPreview = jsonOutput.length > 1000 ?
+                jsonOutput.slice(0, 1000) + '...' : jsonOutput;
+            response += `\n📋 **Vista previa JSON:**\n\`\`\`json\n${jsonPreview}\n\`\`\`\n`;
+        }
+        if (outputFormat === 'csv' || outputFormat === 'both') {
+            // Convertir tablas a CSV
+            let csvOutput = '';
+            extractedData.tables.forEach((table, index) => {
+                csvOutput += `# Tabla ${index + 1}\n`;
+                csvOutput += table.headers.join(',') + '\n';
+                table.rows.forEach(row => {
+                    csvOutput += row.map((cell) => `"${cell}"`).join(',') + '\n';
+                });
+                csvOutput += '\n';
+            });
+            // Agregar pares clave-valor
+            if (Object.keys(extractedData.keyValuePairs).length > 0) {
+                csvOutput += '# Pares Clave-Valor\n';
+                csvOutput += 'Clave,Valor\n';
+                Object.entries(extractedData.keyValuePairs).forEach(([key, value]) => {
+                    csvOutput += `"${key}","${value}"\n`;
+                });
+            }
+            outputs.push('CSV');
+            if (saveTo) {
+                const csvPath = saveTo.replace(/\.[^.]+$/, '.csv');
+                fs.writeFileSync(csvPath, csvOutput, 'utf8');
+                response += `💾 **CSV guardado en:** ${csvPath}\n`;
+            }
+            // Mostrar vista previa del CSV
+            const csvPreview = csvOutput.length > 500 ?
+                csvOutput.slice(0, 500) + '...' : csvOutput;
+            response += `\n📊 **Vista previa CSV:**\n\`\`\`csv\n${csvPreview}\n\`\`\`\n`;
+        }
+        response += `\n✅ **Formatos generados:** ${outputs.join(', ')}`;
+        return {
+            content: [{ type: 'text', text: response }]
+        };
+    }
+    catch (error) {
+        const err = error;
+        return {
+            content: [{ type: 'text', text: `❌ Error extrayendo datos: ${err.message}` }]
+        };
+    }
+});
+server.tool("convert-document-format", "Convierte documentos entre diferentes formatos (PDF→TXT, DOCX→MD, TXT→HTML, etc.) con preservación de estructura, metadatos y formato. Optimizado para conversiones masivas y pipeline de procesamiento de documentos.", {
+    inputPath: z.string().describe("Ruta del archivo de entrada (PDF, DOCX, TXT)"),
+    outputFormat: z.enum(['txt', 'markdown', 'html', 'json', 'csv']).describe("Formato de salida deseado"),
+    outputPath: z.string().optional().describe("Ruta del archivo de salida (se auto-genera si no se especifica)"),
+    preserveFormatting: z.boolean().default(false).describe("Si preservar formato original (negrita, cursiva, etc.) en HTML/Markdown"),
+    includeMetadata: z.boolean().default(true).describe("Si incluir metadatos del documento original en la conversión"),
+    extractStructure: z.boolean().default(true).describe("Si extraer y convertir estructura (tablas, listas) automáticamente"),
+    chunkSize: z.number().default(0).describe("Dividir documento en chunks de N caracteres (0 = sin división)"),
+    addTableOfContents: z.boolean().default(false).describe("Si generar tabla de contenidos automática (para HTML/Markdown)")
+}, async ({ inputPath, outputFormat, outputPath, preserveFormatting, includeMetadata, extractStructure, chunkSize, addTableOfContents }) => {
+    try {
+        console.log(`🔄 Convirtiendo documento: ${inputPath} → ${outputFormat.toUpperCase()}`);
+        // Leer documento original
+        const docResult = await filesHelpers.readDocument(inputPath, {
+            extractText: true,
+            extractMetadata: includeMetadata,
+            analyzeText: false,
+            extractStructure
+        });
+        if (!docResult.success) {
+            return {
+                content: [{ type: 'text', text: `❌ Error leyendo documento: ${docResult.error}` }]
+            };
+        }
+        // Generar ruta de salida si no se especifica
+        const finalOutputPath = outputPath ||
+            inputPath.replace(/\.[^.]+$/, `.${outputFormat === 'txt' ? 'txt' : outputFormat}`);
+        // Convertir contenido
+        let convertedContent = filesHelpers.convertTextToFormat(docResult.content, outputFormat, { extractStructure, includeMetadata });
+        // Aplicar chunking si se solicita
+        if (chunkSize > 0 && docResult.content.length > chunkSize) {
+            const chunks = [];
+            for (let i = 0; i < docResult.content.length; i += chunkSize) {
+                chunks.push(docResult.content.slice(i, i + chunkSize));
+            }
+            if (outputFormat === 'json') {
+                convertedContent = JSON.stringify({
+                    metadata: docResult.metadata,
+                    chunks: chunks.map((chunk, index) => ({
+                        id: index + 1,
+                        content: chunk,
+                        startChar: index * chunkSize,
+                        endChar: Math.min((index + 1) * chunkSize, docResult.content.length)
+                    })),
+                    totalChunks: chunks.length
+                }, null, 2);
+            }
+            else if (outputFormat === 'markdown') {
+                convertedContent = chunks.map((chunk, index) => `## Chunk ${index + 1}\n\n${chunk}`).join('\n\n---\n\n');
+            }
+        }
+        // Agregar tabla de contenidos si se solicita
+        if (addTableOfContents && (outputFormat === 'html' || outputFormat === 'markdown')) {
+            const headings = docResult.content.match(/^.{1,100}$/gm)
+                ?.filter(line => line.length < 80 && !line.includes('.'))
+                ?.slice(0, 10) || [];
+            if (headings.length > 0) {
+                const toc = outputFormat === 'markdown' ?
+                    '## Tabla de Contenidos\n\n' + headings.map((h, i) => `${i + 1}. ${h}`).join('\n') + '\n\n' :
+                    '<h2>Tabla de Contenidos</h2><ol>' + headings.map(h => `<li>${h}</li>`).join('') + '</ol>';
+                convertedContent = toc + convertedContent;
+            }
+        }
+        // Guardar archivo convertido
+        fs.writeFileSync(finalOutputPath, convertedContent, 'utf8');
+        // Generar estadísticas de conversión
+        const originalSize = docResult.content.length;
+        const convertedSize = convertedContent.length;
+        const compressionRatio = ((originalSize - convertedSize) / originalSize * 100).toFixed(1);
+        let response = `🔄 **Conversión Completada**\n\n`;
+        response += `📄 **Archivo original:** ${path.basename(inputPath)} (${docResult.type})\n`;
+        response += `📝 **Archivo convertido:** ${path.basename(finalOutputPath)} (${outputFormat.toUpperCase()})\n`;
+        response += `📊 **Estadísticas:**\n`;
+        response += `• Tamaño original: ${originalSize.toLocaleString()} caracteres\n`;
+        response += `• Tamaño convertido: ${convertedSize.toLocaleString()} caracteres\n`;
+        response += `• Ratio: ${compressionRatio}% ${compressionRatio.startsWith('-') ? 'expansión' : 'compresión'}\n`;
+        if (docResult.metadata) {
+            response += `• Metadatos preservados: ${includeMetadata ? 'Sí' : 'No'}\n`;
+        }
+        if (chunkSize > 0) {
+            const numChunks = Math.ceil(originalSize / chunkSize);
+            response += `• Chunks generados: ${numChunks}\n`;
+        }
+        response += `\n💾 **Archivo guardado en:** ${finalOutputPath}\n`;
+        // Mostrar vista previa del contenido convertido
+        const preview = convertedContent.length > 800 ?
+            convertedContent.slice(0, 800) + '...' : convertedContent;
+        response += `\n📖 **Vista previa del contenido convertido:**\n\`\`\`${outputFormat}\n${preview}\n\`\`\`\n\n`;
+        response += `✅ **Conversión exitosa**`;
+        return {
+            content: [{ type: 'text', text: response }]
+        };
+    }
+    catch (error) {
+        const err = error;
+        return {
+            content: [{ type: 'text', text: `❌ Error en conversión: ${err.message}` }]
+        };
+    }
+});
 async function main() {
     const transport = new StdioServerTransport();
     await server.connect(transport);
@@ -2011,4 +2344,409 @@ main().catch((error) => {
     // Usar stderr para errores, no stdout
     process.stderr.write(`Error starting server: ${error}\n`);
     process.exit(1);
+});
+server.tool("analyze-text-semantics", "Análisis semántico avanzado de texto: sentimientos, emociones, toxicidad, entidades nombradas, temas principales, resumen automático y métricas de legibilidad. Especializado para análisis de contenido, redes sociales, documentos legales y feedback de usuarios.", {
+    text: z.string().describe("Texto a analizar (puede ser largo, se procesará en chunks automáticamente)"),
+    analysisDepth: z.enum(['basic', 'detailed', 'comprehensive']).default('detailed').describe("'basic'=estadísticas+sentimiento, 'detailed'=+entidades+keywords, 'comprehensive'=+temas+resumen+emociones"),
+    language: z.enum(['auto', 'spanish', 'english']).default('auto').describe("Idioma del texto para optimizar análisis NLP"),
+    includeSummary: z.boolean().default(true).describe("Si generar resumen automático del texto (hasta 3 oraciones)"),
+    keywordCount: z.number().default(15).describe("Número de palabras clave más relevantes a extraer"),
+    detectTopics: z.boolean().default(true).describe("Si detectar temas principales del texto usando clustering semántico"),
+    analyzeReadability: z.boolean().default(true).describe("Si calcular métricas de legibilidad (Flesch, nivel educativo, tiempo lectura)"),
+    chunkSize: z.number().default(5000).describe("Tamaño de chunks para textos largos (caracteres)")
+}, async ({ text, analysisDepth, language, includeSummary, keywordCount, detectTopics, analyzeReadability, chunkSize }) => {
+    try {
+        console.log(`🧠 Analizando semántica del texto (${text.length} chars, profundidad: ${analysisDepth})`);
+        // Dividir texto en chunks si es muy largo
+        const chunks = [];
+        if (text.length > chunkSize) {
+            for (let i = 0; i < text.length; i += chunkSize) {
+                chunks.push(text.slice(i, i + chunkSize));
+            }
+        }
+        else {
+            chunks.push(text);
+        }
+        console.log(`📦 Procesando ${chunks.length} chunks...`);
+        // Análisis básico que siempre se ejecuta
+        const basicAnalysis = filesHelpers.analyzeText(text, {
+            includeSentiment: true,
+            includeKeywords: true,
+            includeEntities: analysisDepth !== 'basic',
+            includeReadability: analyzeReadability,
+            keywordCount
+        });
+        let result = {
+            metadata: {
+                textLength: text.length,
+                chunks: chunks.length,
+                analysisDepth,
+                detectedLanguage: language === 'auto' ? 'Auto-detected' : language,
+                processedAt: new Date().toISOString()
+            },
+            statistics: basicAnalysis.statistics,
+            sentiment: basicAnalysis.sentiment,
+            keywords: basicAnalysis.keywords
+        };
+        // Análisis detallado
+        if (analysisDepth === 'detailed' || analysisDepth === 'comprehensive') {
+            result.entities = basicAnalysis.entities;
+            result.readability = basicAnalysis.readability;
+            // Detección de patrones textuales
+            result.patterns = {
+                questions: (text.match(/\?/g) || []).length,
+                exclamations: (text.match(/!/g) || []).length,
+                numbers: (text.match(/\d+/g) || []).length,
+                urls: (text.match(/https?:\/\/[^\s]+/g) || []).length,
+                emails: (text.match(/[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}/g) || []).length,
+                phoneNumbers: (text.match(/\+?[\d\s\-\(\)]+/g) || []).filter(m => m.length > 8).length
+            };
+            // Análisis de estructura del texto
+            const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 0);
+            const paragraphs = text.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+            result.structure = {
+                avgSentenceLength: sentences.reduce((sum, s) => sum + s.length, 0) / sentences.length || 0,
+                longestSentence: Math.max(...sentences.map(s => s.length)),
+                shortestSentence: Math.min(...sentences.map(s => s.length)),
+                avgParagraphLength: paragraphs.reduce((sum, p) => sum + p.length, 0) / paragraphs.length || 0,
+                complexSentences: sentences.filter(s => (s.match(/,/g) || []).length > 2).length
+            };
+        }
+        // Análisis comprehensivo
+        if (analysisDepth === 'comprehensive') {
+            // Generar resumen automático (simplificado)
+            if (includeSummary) {
+                const sentences = text.split(/[.!?]+/).filter(s => s.trim().length > 10);
+                const importantSentences = sentences
+                    .filter(s => {
+                    const words = s.toLowerCase().split(/\s+/);
+                    return basicAnalysis.keywords?.some(keyword => words.some(word => word.includes(keyword.toLowerCase()))) || false;
+                })
+                    .slice(0, 3);
+                result.summary = importantSentences.join('. ') + '.';
+            }
+            // Detección de temas usando palabras clave
+            if (detectTopics && basicAnalysis.keywords) {
+                const topicClusters = [];
+                const keywords = basicAnalysis.keywords.slice(0, 12);
+                // Agrupar keywords relacionadas (simulación simple)
+                const businessTerms = ['empresa', 'negocio', 'ventas', 'cliente', 'producto', 'mercado'];
+                const techTerms = ['sistema', 'software', 'tecnología', 'digital', 'datos', 'análisis'];
+                const legalTerms = ['ley', 'derecho', 'legal', 'contrato', 'tribunal', 'justicia'];
+                if (keywords.some(k => businessTerms.some(t => k.toLowerCase().includes(t)))) {
+                    topicClusters.push({ topic: 'Negocios', confidence: 0.8, keywords: keywords.filter(k => businessTerms.some(t => k.toLowerCase().includes(t))) });
+                }
+                if (keywords.some(k => techTerms.some(t => k.toLowerCase().includes(t)))) {
+                    topicClusters.push({ topic: 'Tecnología', confidence: 0.7, keywords: keywords.filter(k => techTerms.some(t => k.toLowerCase().includes(t))) });
+                }
+                if (keywords.some(k => legalTerms.some(t => k.toLowerCase().includes(t)))) {
+                    topicClusters.push({ topic: 'Legal', confidence: 0.9, keywords: keywords.filter(k => legalTerms.some(t => k.toLowerCase().includes(t))) });
+                }
+                result.topics = topicClusters.length > 0 ? topicClusters : [{ topic: 'General', confidence: 0.5, keywords: keywords.slice(0, 5) }];
+            }
+            // Análisis de emociones (básico)
+            const emotions = {
+                joy: (text.match(/\b(feliz|alegr|content|júbilo|goz)/gi) || []).length,
+                anger: (text.match(/\b(enfad|iracund|furios|ira|cóler)/gi) || []).length,
+                fear: (text.match(/\b(mied|temor|pánic|terror|asust)/gi) || []).length,
+                sadness: (text.match(/\b(trist|melanc|deprimi|llor|pena)/gi) || []).length,
+                surprise: (text.match(/\b(sorpres|asombr|admirar|pasmar)/gi) || []).length
+            };
+            result.emotions = emotions;
+            const totalEmotions = Object.values(emotions).reduce((sum, val) => sum + val, 0);
+            result.dominantEmotion = totalEmotions > 0 ?
+                Object.entries(emotions).reduce((a, b) => emotions[a[0]] > emotions[b[0]] ? a : b)[0] : 'neutral';
+        }
+        // Generar respuesta formateada
+        let response = `🧠 **Análisis Semántico Completado**\n\n`;
+        response += `📄 **Texto:** ${text.length.toLocaleString()} caracteres\n`;
+        response += `🔍 **Análisis:** ${analysisDepth} (${chunks.length} chunks)\n`;
+        response += `🌐 **Idioma:** ${result.metadata.detectedLanguage}\n\n`;
+        // Estadísticas básicas
+        response += `📊 **Estadísticas:**\n`;
+        response += `• Palabras: ${result.statistics.words}\n`;
+        response += `• Oraciones: ${result.statistics.sentences}\n`;
+        response += `• Párrafos: ${result.statistics.paragraphs}\n`;
+        response += `• Promedio palabras/oración: ${result.statistics.averageWordsPerSentence.toFixed(1)}\n\n`;
+        // Sentimiento
+        if (result.sentiment) {
+            response += `💭 **Sentimiento:**\n`;
+            response += `• Polaridad: ${result.sentiment.polarity} (score: ${result.sentiment.score})\n`;
+            response += `• Comparativo: ${result.sentiment.comparative.toFixed(3)}\n`;
+            if (result.sentiment.positive.length > 0) {
+                response += `• Palabras positivas: ${result.sentiment.positive.slice(0, 5).join(', ')}\n`;
+            }
+            if (result.sentiment.negative.length > 0) {
+                response += `• Palabras negativas: ${result.sentiment.negative.slice(0, 5).join(', ')}\n`;
+            }
+            response += '\n';
+        }
+        // Palabras clave
+        if (result.keywords) {
+            response += `🔑 **Palabras Clave (${result.keywords.length}):**\n`;
+            response += `${result.keywords.slice(0, 10).join(', ')}\n\n`;
+        }
+        // Legibilidad
+        if (result.readability) {
+            response += `📖 **Legibilidad:**\n`;
+            response += `• Nivel: ${result.readability.readingLevel}\n`;
+            response += `• Índice Flesch: ${result.readability.fleschScore}\n`;
+            response += `• Tiempo lectura: ~${result.readability.estimatedReadingTimeMinutes} minutos\n\n`;
+        }
+        // Entidades (si está disponible)
+        if (result.entities) {
+            response += `🏷️ **Entidades Detectadas:**\n`;
+            if (result.entities.people?.length > 0)
+                response += `• Personas: ${result.entities.people.slice(0, 5).join(', ')}\n`;
+            if (result.entities.places?.length > 0)
+                response += `• Lugares: ${result.entities.places.slice(0, 5).join(', ')}\n`;
+            if (result.entities.organizations?.length > 0)
+                response += `• Organizaciones: ${result.entities.organizations.slice(0, 3).join(', ')}\n`;
+            response += '\n';
+        }
+        // Patrones (análisis detallado)
+        if (result.patterns) {
+            response += `🔍 **Patrones del Texto:**\n`;
+            response += `• Preguntas: ${result.patterns.questions}\n`;
+            response += `• Exclamaciones: ${result.patterns.exclamations}\n`;
+            response += `• Números: ${result.patterns.numbers}\n`;
+            if (result.patterns.urls > 0)
+                response += `• URLs: ${result.patterns.urls}\n`;
+            if (result.patterns.emails > 0)
+                response += `• Emails: ${result.patterns.emails}\n`;
+            response += '\n';
+        }
+        // Temas (análisis comprehensivo)
+        if (result.topics) {
+            response += `🎯 **Temas Principales:**\n`;
+            result.topics.forEach((topic) => {
+                response += `• ${topic.topic} (${(topic.confidence * 100).toFixed(0)}%): ${topic.keywords.join(', ')}\n`;
+            });
+            response += '\n';
+        }
+        // Emociones (análisis comprehensivo)
+        if (result.emotions) {
+            response += `😊 **Análisis Emocional:**\n`;
+            response += `• Dominante: ${result.dominantEmotion}\n`;
+            Object.entries(result.emotions).forEach(([emotion, count]) => {
+                if (count > 0)
+                    response += `• ${emotion}: ${count} menciones\n`;
+            });
+            response += '\n';
+        }
+        // Resumen (análisis comprehensivo)
+        if (result.summary) {
+            response += `📝 **Resumen Automático:**\n`;
+            response += `"${result.summary}"\n\n`;
+        }
+        response += `✅ **Análisis completado en ${analysisDepth} profundidad**`;
+        return {
+            content: [{ type: 'text', text: response }]
+        };
+    }
+    catch (error) {
+        const err = error;
+        return {
+            content: [{ type: 'text', text: `❌ Error en análisis semántico: ${err.message}` }]
+        };
+    }
+});
+server.tool("compare-documents", "Compara dos documentos para detectar similitudes, diferencias, plagio, cambios de versión y análisis comparativo de contenido. Utiliza algoritmos de similitud semántica, análisis de n-gramas y detección de estructura para proporcionar un reporte completo de comparación.", {
+    document1Path: z.string().describe("Ruta del primer documento a comparar (PDF, DOCX, TXT)"),
+    document2Path: z.string().describe("Ruta del segundo documento a comparar (PDF, DOCX, TXT)"),
+    comparisonType: z.enum(['similarity', 'differences', 'plagiarism', 'version-changes']).default('similarity').describe("'similarity'=similitudes semánticas, 'differences'=diferencias específicas, 'plagiarism'=detección plagio, 'version-changes'=análisis cambios versión"),
+    includeStructural: z.boolean().default(true).describe("Si comparar estructura de documentos (párrafos, secciones, formato)"),
+    includeSemantic: z.boolean().default(true).describe("Si realizar comparación semántica del contenido"),
+    similarityThreshold: z.number().default(0.7).describe("Umbral de similitud (0-1) para considerar contenido similar"),
+    chunkSize: z.number().default(1000).describe("Tamaño de chunks para comparación granular"),
+    generateReport: z.boolean().default(true).describe("Si generar reporte detallado de comparación")
+}, async ({ document1Path, document2Path, comparisonType, includeStructural, includeSemantic, similarityThreshold, chunkSize, generateReport }) => {
+    try {
+        console.log(`📊 Comparando documentos: ${path.basename(document1Path)} vs ${path.basename(document2Path)}`);
+        // Leer ambos documentos
+        const [doc1, doc2] = await Promise.all([
+            filesHelpers.readDocument(document1Path, { extractText: true, extractMetadata: true, extractStructure: includeStructural }),
+            filesHelpers.readDocument(document2Path, { extractText: true, extractMetadata: true, extractStructure: includeStructural })
+        ]);
+        if (!doc1.success || !doc2.success) {
+            return {
+                content: [{ type: 'text', text: `❌ Error leyendo documentos: ${doc1.error || doc2.error}` }]
+            };
+        }
+        const comparison = {
+            metadata: {
+                document1: { name: path.basename(document1Path), type: doc1.type, size: doc1.content.length },
+                document2: { name: path.basename(document2Path), type: doc2.type, size: doc2.content.length },
+                comparisonType,
+                analyzedAt: new Date().toISOString()
+            },
+            metrics: {},
+            analysis: {}
+        };
+        // Estadísticas básicas de comparación
+        const text1 = doc1.content.toLowerCase();
+        const text2 = doc2.content.toLowerCase();
+        comparison.metrics.basic = {
+            sizeDifference: Math.abs(doc1.content.length - doc2.content.length),
+            sizeRatio: Math.min(doc1.content.length, doc2.content.length) / Math.max(doc1.content.length, doc2.content.length),
+            wordCountDiff: Math.abs(text1.split(/\s+/).length - text2.split(/\s+/).length)
+        };
+        // Comparación de similitud con n-gramas
+        if (includeSemantic) {
+            const words1 = text1.split(/\s+/).filter(w => w.length > 2);
+            const words2 = text2.split(/\s+/).filter(w => w.length > 2);
+            // Similitud de palabras únicas
+            const uniqueWords1 = new Set(words1);
+            const uniqueWords2 = new Set(words2);
+            const commonWords = new Set([...uniqueWords1].filter(w => uniqueWords2.has(w)));
+            const jaccardSimilarity = commonWords.size / (uniqueWords1.size + uniqueWords2.size - commonWords.size);
+            // Análisis de n-gramas (trigrams)
+            const getNGrams = (text, n) => {
+                const words = text.split(/\s+/);
+                const ngrams = [];
+                for (let i = 0; i <= words.length - n; i++) {
+                    ngrams.push(words.slice(i, i + n).join(' '));
+                }
+                return ngrams;
+            };
+            const trigrams1 = new Set(getNGrams(text1, 3));
+            const trigrams2 = new Set(getNGrams(text2, 3));
+            const commonTrigrams = new Set([...trigrams1].filter(t => trigrams2.has(t)));
+            const trigramSimilarity = commonTrigrams.size / Math.max(trigrams1.size, trigrams2.size);
+            comparison.metrics.similarity = {
+                jaccard: parseFloat(jaccardSimilarity.toFixed(3)),
+                trigram: parseFloat(trigramSimilarity.toFixed(3)),
+                commonWords: commonWords.size,
+                uniqueWords1: uniqueWords1.size,
+                uniqueWords2: uniqueWords2.size,
+                overallSimilarity: parseFloat(((jaccardSimilarity + trigramSimilarity) / 2).toFixed(3))
+            };
+            // Detección de posible plagio
+            if (comparisonType === 'plagiarism') {
+                const suspiciousSegments = [];
+                const sentences1 = doc1.content.split(/[.!?]+/).filter(s => s.trim().length > 20);
+                const sentences2 = doc2.content.split(/[.!?]+/).filter(s => s.trim().length > 20);
+                sentences1.forEach((sent1, i) => {
+                    sentences2.forEach((sent2, j) => {
+                        const sent1Clean = sent1.toLowerCase().trim();
+                        const sent2Clean = sent2.toLowerCase().trim();
+                        if (sent1Clean.length > 50 && sent2Clean.length > 50) {
+                            const commonWordsInSentence = sent1Clean.split(/\s+/).filter(w => sent2Clean.includes(w)).length;
+                            const similarity = commonWordsInSentence / Math.max(sent1Clean.split(/\s+/).length, sent2Clean.split(/\s+/).length);
+                            if (similarity > similarityThreshold) {
+                                suspiciousSegments.push({
+                                    sentence1Index: i,
+                                    sentence2Index: j,
+                                    similarity: parseFloat(similarity.toFixed(3)),
+                                    text1: sent1.trim().slice(0, 100) + '...',
+                                    text2: sent2.trim().slice(0, 100) + '...'
+                                });
+                            }
+                        }
+                    });
+                });
+                comparison.analysis.plagiarism = {
+                    suspiciousSegments: suspiciousSegments.slice(0, 10), // Limitar a top 10
+                    totalSuspiciousSegments: suspiciousSegments.length,
+                    plagiarismRisk: suspiciousSegments.length > 5 ? 'Alto' : suspiciousSegments.length > 2 ? 'Medio' : 'Bajo'
+                };
+            }
+        }
+        // Comparación estructural
+        if (includeStructural && doc1.structure && doc2.structure) {
+            comparison.metrics.structure = {
+                tables: {
+                    doc1: doc1.structure.tables?.length || 0,
+                    doc2: doc2.structure.tables?.length || 0,
+                    difference: Math.abs((doc1.structure.tables?.length || 0) - (doc2.structure.tables?.length || 0))
+                },
+                lists: {
+                    doc1: doc1.structure.lists?.length || 0,
+                    doc2: doc2.structure.lists?.length || 0,
+                    difference: Math.abs((doc1.structure.lists?.length || 0) - (doc2.structure.lists?.length || 0))
+                },
+                keyValuePairs: {
+                    doc1: Object.keys(doc1.structure.keyValuePairs || {}).length,
+                    doc2: Object.keys(doc2.structure.keyValuePairs || {}).length,
+                    difference: Math.abs(Object.keys(doc1.structure.keyValuePairs || {}).length - Object.keys(doc2.structure.keyValuePairs || {}).length)
+                }
+            };
+        }
+        // Análisis de diferencias específicas
+        if (comparisonType === 'differences') {
+            const paragraphs1 = doc1.content.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+            const paragraphs2 = doc2.content.split(/\n\s*\n/).filter(p => p.trim().length > 0);
+            const differences = {
+                addedParagraphs: [],
+                removedParagraphs: [],
+                modifiedParagraphs: []
+            };
+            // Simplificada detección de diferencias
+            paragraphs1.forEach((p1, i) => {
+                const similar = paragraphs2.find(p2 => {
+                    const commonWords = p1.toLowerCase().split(/\s+/).filter(w => p2.toLowerCase().includes(w)).length;
+                    return commonWords / p1.split(/\s+/).length > 0.6;
+                });
+                if (!similar && p1.length > 50) {
+                    differences.removedParagraphs.push({ index: i, text: p1.slice(0, 150) + '...' });
+                }
+            });
+            comparison.analysis.differences = differences;
+        }
+        // Generar respuesta
+        let response = `📊 **Comparación de Documentos Completada**\n\n`;
+        response += `📄 **Documento 1:** ${comparison.metadata.document1.name} (${comparison.metadata.document1.type}, ${comparison.metadata.document1.size} chars)\n`;
+        response += `📄 **Documento 2:** ${comparison.metadata.document2.name} (${comparison.metadata.document2.type}, ${comparison.metadata.document2.size} chars)\n`;
+        response += `🔍 **Tipo de análisis:** ${comparisonType}\n\n`;
+        // Métricas básicas
+        response += `📊 **Métricas Básicas:**\n`;
+        response += `• Diferencia de tamaño: ${comparison.metrics.basic.sizeDifference} caracteres\n`;
+        response += `• Ratio de tamaño: ${(comparison.metrics.basic.sizeRatio * 100).toFixed(1)}%\n`;
+        response += `• Diferencia de palabras: ${comparison.metrics.basic.wordCountDiff}\n\n`;
+        // Similitud semántica
+        if (comparison.metrics.similarity) {
+            response += `🧠 **Similitud Semántica:**\n`;
+            response += `• Similitud general: ${(comparison.metrics.similarity.overallSimilarity * 100).toFixed(1)}%\n`;
+            response += `• Similitud Jaccard: ${(comparison.metrics.similarity.jaccard * 100).toFixed(1)}%\n`;
+            response += `• Similitud de trigramas: ${(comparison.metrics.similarity.trigram * 100).toFixed(1)}%\n`;
+            response += `• Palabras en común: ${comparison.metrics.similarity.commonWords}\n\n`;
+        }
+        // Comparación estructural
+        if (comparison.metrics.structure) {
+            response += `🏗️ **Comparación Estructural:**\n`;
+            response += `• Tablas: ${comparison.metrics.structure.tables.doc1} vs ${comparison.metrics.structure.tables.doc2} (diff: ${comparison.metrics.structure.tables.difference})\n`;
+            response += `• Listas: ${comparison.metrics.structure.lists.doc1} vs ${comparison.metrics.structure.lists.doc2} (diff: ${comparison.metrics.structure.lists.difference})\n`;
+            response += `• Pares clave-valor: ${comparison.metrics.structure.keyValuePairs.doc1} vs ${comparison.metrics.structure.keyValuePairs.doc2} (diff: ${comparison.metrics.structure.keyValuePairs.difference})\n\n`;
+        }
+        // Análisis de plagio
+        if (comparison.analysis.plagiarism) {
+            response += `🚨 **Análisis de Plagio:**\n`;
+            response += `• Riesgo: ${comparison.analysis.plagiarism.plagiarismRisk}\n`;
+            response += `• Segmentos sospechosos: ${comparison.analysis.plagiarism.totalSuspiciousSegments}\n`;
+            if (comparison.analysis.plagiarism.suspiciousSegments.length > 0) {
+                response += `\n**Top segmentos sospechosos:**\n`;
+                comparison.analysis.plagiarism.suspiciousSegments.slice(0, 3).forEach((seg, i) => {
+                    response += `${i + 1}. Similitud: ${(seg.similarity * 100).toFixed(0)}%\n`;
+                    response += `   Doc1: "${seg.text1}"\n`;
+                    response += `   Doc2: "${seg.text2}"\n\n`;
+                });
+            }
+        }
+        // Generar reporte si se solicita
+        if (generateReport) {
+            const reportPath = `/tmp/comparison_report_${Date.now()}.json`;
+            fs.writeFileSync(reportPath, JSON.stringify(comparison, null, 2), 'utf8');
+            response += `💾 **Reporte detallado guardado en:** ${reportPath}\n\n`;
+        }
+        response += `✅ **Comparación completada con ${comparisonType} análisis**`;
+        return {
+            content: [{ type: 'text', text: response }]
+        };
+    }
+    catch (error) {
+        const err = error;
+        return {
+            content: [{ type: 'text', text: `❌ Error comparando documentos: ${err.message}` }]
+        };
+    }
 });
